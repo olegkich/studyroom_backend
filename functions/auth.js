@@ -2,6 +2,8 @@ import { ACCES_TOKEN_DOE, REFRESH_TOKEN_DOE } from "./const.js";
 
 import { onRequest } from "firebase-functions/v2/https";
 
+import admin from "firebase-admin";
+
 import Joi from "joi";
 import bcrypt from "bcrypt";
 import { generateToken } from "./jwt.js";
@@ -24,24 +26,30 @@ const loginValidationSchema = Joi.object({
 
 export const handleSignup = onRequest(async (req, res) => {
   const body = req.body;
-  const query = req.query;
 
   const validate = signupValidationSchema.validate(body);
-
-  // check if name/email is already in db
 
   if (validate.error) {
     res.json({ message: validate.error.message }).status(401);
     return;
   }
 
+  const userCollection = await admin.firestore().collection("users");
+
+  const candidate = await userCollection.where("email", "==", body.email).get();
+
+  if (!candidate.empty) {
+    res.json({ message: "User already exists." }).status(401);
+    return;
+  }
+
   body.password = await bcrypt.hash(body.password, 6);
 
-  // save user to db
+  // add returns a query result object from which ID is extracted
+  const { id } = await userCollection.add(req.body);
 
-  // id is extracted from DB response, for now it's just 1 TODO
-  const access_token = generateToken(1, body.userName, ACCES_TOKEN_DOE);
-  const refresh_token = generateToken(1, body.userName, REFRESH_TOKEN_DOE);
+  const access_token = generateToken(id, body.userName, ACCES_TOKEN_DOE);
+  const refresh_token = generateToken(id, body.userName, REFRESH_TOKEN_DOE);
 
   res
     .json({
@@ -57,7 +65,6 @@ export const handleSignup = onRequest(async (req, res) => {
 // TODO: move to different file
 export const handleLogin = onRequest(async (req, res) => {
   const body = req.body;
-  const query = req.query;
 
   const validate = loginValidationSchema.validate(body);
 
@@ -66,20 +73,35 @@ export const handleLogin = onRequest(async (req, res) => {
     return;
   }
 
-  // check if user with name/email exists.
+  const userCollection = await admin.firestore().collection("users");
 
-  // get password from db and bcrypt.compare()
+  const query = await userCollection.where("email", "==", body.email).get();
 
-  // id is extracted from DB response, for now it's just 1 TODO
-  const access_token = generateToken(1, body.userName, ACCES_TOKEN_DOE);
-  const refresh_token = generateToken(1, body.userName, REFRESH_TOKEN_DOE);
+  const user = await query.docs[0].data();
+
+  if (user.empty) {
+    res.json({ message: "User doesn't exist." }).status(401);
+    return;
+  }
+
+  const isPasswordValid = await bcrypt.compare(body.password, user.password);
+
+  if (!isPasswordValid) {
+    res.json({ message: "Invalid password." }).status(401);
+    return;
+  }
+
+  const access_token = generateToken(user.id, body.userName, ACCES_TOKEN_DOE);
+  const refresh_token = generateToken(
+    user.id,
+    body.userName,
+    REFRESH_TOKEN_DOE
+  );
 
   // TODO: move message to strings.js
   res
     .json({
-      message: `all is cool, created user with data: \n ${JSON.stringify(
-        body
-      )}`,
+      message: `Log in successful`,
       access_token,
       refresh_token,
     })
