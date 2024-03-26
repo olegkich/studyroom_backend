@@ -7,6 +7,7 @@ import admin from "firebase-admin";
 import Joi from "joi";
 import bcrypt from "bcrypt";
 import { generateToken } from "./jwt.js";
+import { authenticateToken } from "./middleware.js";
 
 const signupValidationSchema = Joi.object({
   email: Joi.string().email().required(),
@@ -19,12 +20,23 @@ const signupValidationSchema = Joi.object({
 });
 
 const loginValidationSchema = Joi.object({
+  email: Joi.string().email(),
+  password: Joi.string().min(6).required(),
+  userName: Joi.string().max(50),
+}).or("email", "userName");
+
+const accountValidationSchema = Joi.object({
   email: Joi.string().email().required(),
   password: Joi.string().min(6).required(),
-  userName: Joi.string().max(50).required(),
-}).xor("email", "username");
+  age: Joi.number().min(13).max(99).required(),
+});
 
-export const handleSignup = onRequest(async (req, res) => {
+const profileValidationSchema = Joi.object({
+  firstName: Joi.string().max(50).required(),
+  lastName: Joi.string().max(50).required(),
+});
+
+export const handleSignup = onRequest({ cors: true }, async (req, res) => {
   const body = req.body;
 
   const validate = signupValidationSchema.validate(body);
@@ -51,19 +63,19 @@ export const handleSignup = onRequest(async (req, res) => {
   const access_token = generateToken(id, body.userName, ACCES_TOKEN_DOE);
   const refresh_token = generateToken(id, body.userName, REFRESH_TOKEN_DOE);
 
+  delete body.password;
+
   res
     .json({
-      message: `all is cool, created user with data: \n ${JSON.stringify(
-        body
-      )}`,
+      message: `created user.`,
+      user: body,
       access_token,
       refresh_token,
     })
     .status(201);
 });
 
-// TODO: move to different file
-export const handleLogin = onRequest(async (req, res) => {
+export const handleLogin = onRequest({ cors: true }, async (req, res) => {
   const body = req.body;
 
   const validate = loginValidationSchema.validate(body);
@@ -77,7 +89,9 @@ export const handleLogin = onRequest(async (req, res) => {
 
   const query = await userCollection.where("email", "==", body.email).get();
 
-  const user = await query.docs[0].data();
+  const doc = await query.docs[0];
+
+  const user = doc.data();
 
   if (user.empty) {
     res.json({ message: "User doesn't exist." }).status(401);
@@ -91,19 +105,81 @@ export const handleLogin = onRequest(async (req, res) => {
     return;
   }
 
-  const access_token = generateToken(user.id, body.userName, ACCES_TOKEN_DOE);
+  const access_token = generateToken(doc.id, body.userName, ACCES_TOKEN_DOE);
   const refresh_token = generateToken(
     user.id,
     body.userName,
     REFRESH_TOKEN_DOE
   );
 
-  // TODO: move message to strings.js
+  delete user.password;
+
   res
     .json({
       message: `Log in successful`,
+      user,
       access_token,
       refresh_token,
     })
     .status(201);
+});
+
+export const handleProfileUpdate = onRequest(
+  { cors: true },
+  async (req, res) => {
+    authenticateToken(req, res, async () => {
+      const { id } = req.user;
+      const profileData = req.body;
+
+      console.log(id);
+
+      const validate = profileValidationSchema.validate(profileData);
+
+      if (validate.error) {
+        res.json({ message: validate.error.message }).status(401);
+        return;
+      }
+
+      await admin
+        .firestore()
+        .doc(`users/${id}`)
+        .set(profileData, { merge: true });
+
+      res.json({ message: "update successful" }).status(200);
+    });
+  }
+);
+
+export const handleAccountUpdate = onRequest(
+  { cors: true },
+  async (req, res) => {
+    authenticateToken(req, res, async () => {
+      const { id } = req.user;
+      const accountData = req.body;
+
+      const validate = accountValidationSchema.validate(accountData);
+
+      if (validate.error) {
+        res.json({ message: validate.error.message }).status(401);
+        return;
+      }
+
+      await admin
+        .firestore()
+        .doc(`users/${id}`)
+        .set(accountData, { merge: true });
+
+      res.json({ message: "update successful" }).status(200);
+    });
+  }
+);
+
+export const handleDeleteUser = onRequest({ cors: true }, async (req, res) => {
+  authenticateToken(req, res, async () => {
+    const id = req.user.id;
+
+    await admin.firestore().collection("users").doc(id).delete();
+
+    res.json({ message: "delete successful." }).status(200);
+  });
 });
